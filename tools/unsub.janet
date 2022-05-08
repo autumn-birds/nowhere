@@ -36,7 +36,7 @@
 
 (def db (sql/open (string (cmd-output-fail-fast '("mktemp")))))
 (sql/eval db `CREATE TABLE subscriptions(id INTEGER PRIMARY KEY, name TEXT UNIQ, service TEXT, url TEXT, lastChecked INTEGER, checkInterval INTEGER)`)
-(sql/eval db `CREATE TABLE posts(id INTEGER PRIMARY KEY, srcId INTEGER, title TEXT, textBody TEXT, date INTEGER)`)
+(sql/eval db `CREATE TABLE posts(id INTEGER PRIMARY KEY, srcId INTEGER, title TEXT, textBody TEXT, date INTEGER, markedUnread INTEGER)`)
 (sql/eval db `CREATE TABLE blobs(id INTEGER PRIMARY KEY, srcPostId INTEGER, title TEXT, recipe TEXT, size INTEGER, dateFetched INTEGER, storePath TEXT)`)
 # TODO: record hashes?
 
@@ -55,25 +55,43 @@
   (def sub-id-candidates (sql/eval db `SELECT id FROM subscriptions WHERE name IS :name` {:name subscription}))
   (assert (= 1 (length sub-id-candidates)))
   (def [{:id sub-id}] sub-id-candidates)
-  (sql/eval db `INSERT INTO posts VALUES(NULL, :srcId, :title, :textBody, 0)` {:srcId sub-id :title name :textBody text}))
+  (sql/eval db `INSERT INTO posts VALUES(NULL, :srcId, :title, :textBody, 0, 1)` {:srcId sub-id :title name :textBody text}))
 # for testing
 (add-faux-post "HermitCraft S9E0" "etho" "it's a hermitcraft video, dude, just... chill, okay?")
 (add-faux-post "LP episode 999" "etho" "haha, joke's on you")
 (add-faux-post "Hermitcraft S9E57" "grian" "Lorem ipsum sit dolor amicus ret, alendil macro nebuli vog no reparilicus; quese, alarminu kishe eharu noburo, et alchismetr do toupu quonu shandor tis. Lorem ipsum sit dolor amicus ret, alendil macro nebuli vog no reparilicus; quese, alarminu kishe eharu noburo, et alchismetr do toupu quonu shandor tis. Lorem ipsum sit dolor amicus ret, alendil macro nebuli vog no reparilicus; quese, alarminu kishe eharu noburo, et alchismetr do toupu quonu shandor tis. Lorem ipsum sit dolor amicus ret, alendil macro nebuli vog no reparilicus; quese, alarminu kishe eharu noburo, et alchismetr do toupu quonu shandor tis. Lorem ipsum sit dolor amicus ret, alendil macro nebuli vog no reparilicus; quese, alarminu kishe eharu noburo, et alchismetr do toupu quonu shandor tis.")
 
-(def user-commands @{})
+# (pretty-print (sql/eval db `SELECT * FROM posts WHERE srcId = 1;`))
 
+# <GLOBAL TUI STATE>
+(var view @[])
+(var view-kind :subscriptions)
+(var reply-offset-prefix "\t")
+# </GLOBAL TUI STATE>
+
+(defn show-subscription [subscription index]
+  (let [{:name subn :service svc :id subid} subscription
+        posts (sql/eval db `SELECT * FROM posts WHERE srcId = :id AND markedUnread = 1` {:id subid})]
+    (file/write stdout (string reply-offset-prefix
+                               index " "
+                               ":" svc ":" subn
+                               ": " (length posts) " new posts" "\n"))))
+
+(defn do-redisplay []
+  # TODO: item count displayed at a time limit; paging logic ...
+  (def viewer (match view-kind
+    :subscriptions show-subscription))
+  (var index 0)
+  (each item view
+    (set index (+ index 1))
+    (viewer item index)))
+
+(def user-commands @{})
 (defmacro defcmd [name help & body]
   ~(set (user-commands ,(keyword name)) {
      :help ,help
      :run (fn ,(symbol (string "cmd-" name)) [args] ,;body)
    }))
-
-# <GLOBAL TUI STATE>
-(def view @[])
-(var view-kind :subscriptions)
-(var reply-offset-prefix "\t")
-# </GLOBAL TUI STATE>
 
 (defcmd "!" "cut to Janet repl"
   (repl))
@@ -84,8 +102,17 @@
          (keys user-commands)))
   (def implicit-cmds '(["q" "leave the program"]))
   (each cmdpair (array ;defined-cmds ;implicit-cmds)
-    (file/write stdout
-                (string reply-offset-prefix (cmdpair 0) ": " (cmdpair 1) "\n"))))
+    (file/write stdout (string
+      reply-offset-prefix (cmdpair 0) ": " (cmdpair 1) "\n"))))
+
+(defcmd "l"
+  "get list of current subscriptions [opt arg: search term]"
+  (set view (if (> (length args) 0)
+    (do
+      (file/write stdout "searching not implemented\n")
+      view)
+    (sql/eval db `SELECT * FROM subscriptions;`)))
+  (do-redisplay))
 
 (defn run-prompt [prompt-fun initial-prompt-string]
   # prompt-fun, called on a string of the user's input, SHOULD return, in a struct:
