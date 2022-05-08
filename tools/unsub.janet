@@ -66,22 +66,26 @@
 (defmacro defcmd [name help & body]
   ~(set (user-commands ,(keyword name)) {
      :help ,help
-     :run (fn ,(symbol name) [args] ,;body)
+     :run (fn ,(symbol (string "cmd-" name)) [args] ,;body)
    }))
 
 # <GLOBAL TUI STATE>
 (def view @[])
 (var view-kind :subscriptions)
+(var reply-offset-prefix "\t")
 # </GLOBAL TUI STATE>
-
-(defcmd "l" "(re)list items in the current view"
-  (print "to be implemented")
-  (print "we're having fun over here in the testing stage though, for sure")
-  (print "hehehe")
-  (print "args: " (describe args)))
 
 (defcmd "!" "cut to Janet repl"
   (repl))
+
+(defcmd "?" "list commands & their help text"
+  (def defined-cmds
+    (map (fn [k] ~[,(string k) ,((user-commands k) :help)])
+         (keys user-commands)))
+  (def implicit-cmds '(["q" "leave the program"]))
+  (each cmdpair (array ;defined-cmds ;implicit-cmds)
+    (file/write stdout
+                (string reply-offset-prefix (cmdpair 0) ": " (cmdpair 1) "\n"))))
 
 (defn run-prompt [prompt-fun initial-prompt-string]
   # prompt-fun, called on a string of the user's input, SHOULD return, in a struct:
