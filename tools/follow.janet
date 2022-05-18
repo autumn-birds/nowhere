@@ -34,6 +34,7 @@
 
 (import ./sqlite3 :as sql)
 
+# TODO: Figure out how to store a "what version of the schema is this" in the DB, so if in the future we add something or remove something, the program can run the appropriate addition or removal commands.  (..in that case making a new DB would become the sequence of creating the original schema then amending it n times, but..)
 (def db (sql/open (string (cmd-output-fail-fast '("mktemp")))))
 (sql/eval db `CREATE TABLE subscriptions(id INTEGER PRIMARY KEY, name TEXT UNIQ, service TEXT, url TEXT, lastChecked INTEGER, checkInterval INTEGER)`)
 (sql/eval db `CREATE TABLE posts(id INTEGER PRIMARY KEY, srcId INTEGER, title TEXT, textBody TEXT, date INTEGER, markedUnread INTEGER)`)
@@ -67,7 +68,12 @@
 (var view @[])
 (var view-kind :subscriptions)
 (var reply-offset-prefix "\t")
+(def items-per-page 10)
 # </GLOBAL TUI STATE>
+
+(defn get-user-specified-item [number]
+  # Will return nil if the item doesn't exist.
+  (unless (nil? number) (get view (- number 1))))
 
 (defn show-subscription [subscription index]
   (let [{:name subn :service svc :id subid} subscription
@@ -77,14 +83,35 @@
                                ":" svc ":" subn
                                ": " (length posts) " new posts" "\n"))))
 
+(defn show-post [post index]
+  (let [{:title postn :srcId postsid} post
+        post-source (sql/eval db `SELECT * FROM subscriptions WHERE id = :id;` {:id postsid})
+	{:service p-s-svc :name p-s-name :markedUnread p-s-unread} (first post-source)]
+    (assert (= (length post-source) 1))
+    (file/write stdout (string reply-offset-prefix
+                               index " "
+			       (if p-s-unread "[*]")
+			       ":" p-s-svc ":" p-s-name ":" postn
+			       "\n"))))
+
 (defn do-redisplay []
-  # TODO: item count displayed at a time limit; paging logic ...
+  # TODO: item count displayed limit; paging logic ...
   (def viewer (match view-kind
-    :subscriptions show-subscription))
+    :subscriptions show-subscription
+    :posts show-post))
   (var index 0)
-  (each item view
-    (set index (+ index 1))
-    (viewer item index)))
+  (if (nil? viewer)
+    (file/write stdout (string "error: do-redisplay: bad view-kind: " view-kind "\n"))
+    (each item view
+      (set index (+ index 1))
+      (viewer item index))))
+
+(defn setview [kind]
+  (match kind
+    :subscriptions (do
+      (set view (sql/eval db `SELECT * FROM subscriptions;`))
+      (set view-kind :subscriptions))
+    _ (error (string "setview: bad kind of view " kind))))
 
 (def user-commands @{})
 (defmacro defcmd [name help & body]
@@ -106,13 +133,33 @@
       reply-offset-prefix (cmdpair 0) ": " (cmdpair 1) "\n"))))
 
 (defcmd "l"
-  "get list of current subscriptions [opt arg: search term]"
-  (set view (if (> (length args) 0)
+  "[RECOMPUTE] list current subscriptions [opt arg: search term]"
+  (if (> (length args) 0)
+    (file/write stdout "searching not implemented.\n")
     (do
-      (file/write stdout "searching not implemented\n")
-      view)
-    (sql/eval db `SELECT * FROM subscriptions;`)))
-  (do-redisplay))
+      (setview :subscriptions)
+      (do-redisplay))))
+
+(defcmd "o"
+  "[RECOMPUTE] list posts of a subscription"
+  (var err nil)
+  (unless (= view-kind :subscriptions)
+    (file/write stdout "(relisting all subscriptions first)\n")
+    (setview :subscriptions))
+  (set err (or err
+               (if (zero? (length (string/trim args))) "no arguments")))
+  (set err (or err
+               (if (nil? (scan-number (string/trim args))) "argument must be a number to reference subscription")))
+  (if err
+    (file/write stdout (string "sorry, " err "\n"))
+    (do
+      (def requested-subscription (get-user-specified-item (scan-number (string/trim args))))
+      (if (nil? requested-subscription)
+        (file/write stdout (string "no such subscription: " (string/trim args) "\n"))
+	(do
+          (set view (sql/eval db `SELECT * FROM posts WHERE srcId = :id;` {:id (get requested-subscription :id)}))
+          (set view-kind :posts)
+          (do-redisplay))))))
 
 (defn run-prompt [prompt-fun initial-prompt-string]
   # prompt-fun, called on a string of the user's input, SHOULD return, in a struct:
